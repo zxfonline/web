@@ -23,6 +23,7 @@ format:
 	${GOFMT} -w scgi.go
 	${GOFMT} -w servefile.go
 	${GOFMT} -w status.go
+	${GOFMT} -w streaming.go
 	${GOFMT} -w web.go
 	${GOFMT} -w web_test.go
 	${GOFMT} -w examples/hello.go
