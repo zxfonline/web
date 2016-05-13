@@ -40,5 +40,15 @@ func process(ctx *web.Context) string {
 func main() {
 	web.Get("/", index)
 	web.Post("/process", process)
+	web.Get("/close", func() {
+		web.Close()
+	})
+	web.Get("/authorization", func(ctx *web.Context) string {
+		user, pass, err := ctx.GetBasicAuth()
+		if err != nil {
+			return "fail"
+		}
+		return user + pass
+	})
 	web.Run("0.0.0.0:9999")
 }

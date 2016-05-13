@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/zxfonline/json"
 
 	"github.com/zxfonline/golog"
 )
@@ -132,6 +133,14 @@ func init() {
 	mainServer.SetLogger(golog.New("test"))
 	Get("/", func() string { return "index" })
 	Get("/panic", func() { panic(0) })
+	Get("/panic1", func() {
+		panic(&struct {
+			Name string `json:"name"`
+		}{Name: "test"})
+	})
+	Get("/panic2", func() {
+		panic(errors.New("panic2 error"))
+	})
 	Get("/echo/(.*)", func(s string) string { return s })
 	Get("/multiecho/(.*)/(.*)/(.*)/(.*)", func(a, b, c, d string) string { return a + b + c + d })
 	Post("/post/echo/(.*)", func(s string) string { return s })
@@ -139,7 +148,7 @@ func init() {
 
 	Get("/error/code/(.*)", func(ctx *Context, code string) string {
 		n, _ := strconv.Atoi(code)
-		message := statusText[n]
+		message := http.StatusText(n)
 		ctx.Abort(n, message)
 		return ""
 	})
@@ -238,12 +247,14 @@ var tests = []Test{
 	{"GET", "/error/notfound/notfound", nil, "", 404, "notfound"},
 	{"GET", "/doesnotexist", nil, "", 404, "Page not found"},
 	{"POST", "/doesnotexist", nil, "", 404, "Page not found"},
-	{"GET", "/error/code/500", nil, "", 500, statusText[500]},
+	{"GET", "/error/code/500", nil, "", 500, http.StatusText(500)},
 	{"POST", "/posterror/code/410/failedrequest", nil, "", 410, "failedrequest"},
 	{"GET", "/getparam?a=abcd", nil, "", 200, "abcd"},
 	{"GET", "/getparam?b=abcd", nil, "", 200, ""},
 	{"GET", "/fullparams?a=1&a=2&a=3", nil, "", 200, "1,2,3"},
-	{"GET", "/panic", nil, "", 500, "Server Error"},
+	{"GET", "/panic", nil, "", 500, "0"},
+	{"GET", "/panic1", nil, "", 500, `{"name":"test"}`},
+	{"GET", "/panic2", nil, "", 500, "panic2 error"},
 	{"GET", "/json?a=1&b=2", nil, "", 200, `{"a":"1","b":"2"}`},
 	{"GET", "/jsonbytes?a=1&b=2", nil, "", 200, `{"a":"1","b":"2"}`},
 	{"POST", "/parsejson", map[string][]string{"Content-Type": {"application/json"}}, `{"a":"hello", "b":"world"}`, 200, "hello world"},
@@ -356,7 +367,7 @@ func buildTestScgiRequest(method string, path string, body string, headers map[s
 	scgiHeaders["REQUEST_URI"] = path
 	scgiHeaders["SERVER_PORT"] = "80"
 	scgiHeaders["SERVER_PROTOCOL"] = "HTTP/1.1"
-	scgiHeaders["USER_AGENT"] = "web.go test framework"
+	scgiHeaders["USER_AGENT"] = "web test framework"
 
 	for k, v := range headers {
 		//Skip content-length

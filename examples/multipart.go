@@ -59,5 +59,8 @@ func multipart(ctx *web.Context) string {
 func main() {
 	web.Get("/", index)
 	web.Post("/multipart", multipart)
+	web.Get("/close", func() {
+		web.Close()
+	})
 	web.Run("0.0.0.0:9999")
 }

@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"github.com/zxfonline/golog"
-
-	"golang.org/x/net/websocket"
 )
 
 // A Context object is created for every incoming HTTP request, and is
@@ -40,6 +38,11 @@ func (ctx *Context) WriteString(content string) {
 	ctx.ResponseWriter.Write([]byte(content))
 }
 
+// WriteString writes string data into the response object.
+func (ctx *Context) WriteBytes(content []byte) {
+	ctx.ResponseWriter.Write(content)
+}
+
 // Abort is a helper method that sends an HTTP header and an optional
 // body. It is useful for returning 4xx or 5xx errors.
 // Once it has been called, any return value from the handler will
@@ -47,6 +50,15 @@ func (ctx *Context) WriteString(content string) {
 func (ctx *Context) Abort(status int, body string) {
 	ctx.ResponseWriter.WriteHeader(status)
 	ctx.ResponseWriter.Write([]byte(body))
+}
+
+// Abort is a helper method that sends an HTTP header and an optional
+// body. It is useful for returning 4xx or 5xx errors.
+// Once it has been called, any return value from the handler will
+// not be written to the response.
+func (ctx *Context) AbortBytes(status int, body []byte) {
+	ctx.ResponseWriter.WriteHeader(status)
+	ctx.ResponseWriter.Write(body)
 }
 
 // Redirect is a helper method for 3xx redirects.
@@ -232,32 +244,22 @@ func Get(route string, handler interface{}) {
 
 // Post adds a handler for the 'POST' http method in the main server.
 func Post(route string, handler interface{}) {
-	mainServer.addRoute(route, "POST", handler)
+	mainServer.Post(route, handler)
 }
 
 // Put adds a handler for the 'PUT' http method in the main server.
 func Put(route string, handler interface{}) {
-	mainServer.addRoute(route, "PUT", handler)
+	mainServer.Put(route, handler)
 }
 
 // Delete adds a handler for the 'DELETE' http method in the main server.
 func Delete(route string, handler interface{}) {
-	mainServer.addRoute(route, "DELETE", handler)
+	mainServer.Delete(route, handler)
 }
 
 // Match adds a handler for an arbitrary http method in the main server.
 func Match(method string, route string, handler interface{}) {
-	mainServer.addRoute(route, method, handler)
-}
-
-//Adds a custom handler. Only for webserver mode. Will have no effect when running as FCGI or SCGI.
-func Handler(route string, method string, httpHandler http.Handler) {
-	mainServer.Handler(route, method, httpHandler)
-}
-
-//Adds a handler for websockets. Only for webserver mode. Will have no effect when running as FCGI or SCGI.
-func Websocket(route string, httpHandler websocket.Handler) {
-	mainServer.Websocket(route, httpHandler)
+	mainServer.Match(method, route, handler)
 }
 
 // SetLogger sets the logger for the main server.
@@ -265,9 +267,6 @@ func SetLogger(logger *golog.Logger) {
 	mainServer.Logger = logger
 }
 
-// Config is the configuration of the main server.
-var Config = &ServerConfig{
-	RecoverPanic: true,
-}
+var Config = NewServerConfig(SetRecoverPanic(true))
 
-var mainServer = NewServer()
+var mainServer = NewServer(SetServerConfig(Config))

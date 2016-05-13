@@ -30,5 +30,8 @@ func main() {
 		uid, _ := ctx.GetSecureCookie("user")
 		return "You said " + users[uid]
 	})
+	web.Get("/close", func() {
+		web.Close()
+	})
 	web.Run("0.0.0.0:9999")
 }

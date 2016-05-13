@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -12,19 +13,22 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/zxfonline/chanutil"
 	"github.com/zxfonline/golog"
-	"golang.org/x/net/websocket"
+	"github.com/zxfonline/json"
+	//	"golang.org/x/net/websocket"
 )
 
 var HTTP_HEAD = "webserver"
 
+const MAXN_RETRY_TIMES = 60
+
 // ServerConfig is configuration for server objects.
 type ServerConfig struct {
 	StaticDir    string
-	Addr         string
-	Port         int
 	CookieSecret string
 	RecoverPanic bool
 	Profiler     bool
@@ -33,19 +37,63 @@ type ServerConfig struct {
 // Server represents a web.go server.
 type Server struct {
 	Config *ServerConfig
-	routes []route
 	Logger *golog.Logger
+	routes []route
 	Env    map[string]interface{}
 	//save the listener so it can be closed
-	l net.Listener
+	l        net.Listener
+	stopD    chanutil.DoneChan
+	stopOnce sync.Once
+	wg       *sync.WaitGroup
 }
 
-func NewServer() *Server {
-	return &Server{
-		Config: Config,
-		Logger: golog.New("httpserver"),
-		Env:    map[string]interface{}{},
+func SetStaticDir(StaticDir string) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.StaticDir = StaticDir
 	}
+}
+func SetCookieSecret(CookieSecret string) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.CookieSecret = CookieSecret
+	}
+}
+func SetRecoverPanic(RecoverPanic bool) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.RecoverPanic = RecoverPanic
+	}
+}
+func SetProfiler(Profiler bool) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.Profiler = Profiler
+	}
+}
+func NewServerConfig(options ...func(*ServerConfig)) *ServerConfig {
+	cfg := new(ServerConfig)
+	for _, option := range options {
+		option(cfg)
+	}
+	return cfg
+}
+
+func SetServerConfig(cfg *ServerConfig) func(*Server) {
+	return func(s *Server) {
+		s.Config = cfg
+	}
+}
+func SetServerLogger(logger *golog.Logger) func(*Server) {
+	return func(s *Server) {
+		s.Logger = logger
+	}
+}
+
+func NewServer(options ...func(*Server)) *Server {
+	server := new(Server)
+	server.Env = map[string]interface{}{}
+	server.stopD = chanutil.NewDoneChan()
+	for _, option := range options {
+		option(server)
+	}
+	return server
 }
 
 func (s *Server) initServer() {
@@ -58,12 +106,17 @@ func (s *Server) initServer() {
 	}
 }
 
+type ContextHandler interface {
+	ContextHandle(*Context) (interface{}, error)
+}
+
 type route struct {
-	r           string
-	cr          *regexp.Regexp
-	method      string
-	handler     reflect.Value
-	httpHandler http.Handler
+	r              string
+	cr             *regexp.Regexp
+	method         string
+	handler        reflect.Value
+	httpHandler    http.Handler
+	contextHandler ContextHandler
 }
 
 func (s *Server) addRoute(r string, method string, handler interface{}) {
@@ -76,6 +129,8 @@ func (s *Server) addRoute(r string, method string, handler interface{}) {
 	switch handler.(type) {
 	case http.Handler:
 		s.routes = append(s.routes, route{r: r, cr: cr, method: method, httpHandler: handler.(http.Handler)})
+	case ContextHandler:
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, contextHandler: handler.(ContextHandler)})
 	case reflect.Value:
 		fv := handler.(reflect.Value)
 		s.routes = append(s.routes, route{r: r, cr: cr, method: method, handler: fv})
@@ -129,9 +184,9 @@ func (s *Server) Handler(route string, method string, httpHandler http.Handler) 
 }
 
 //Adds a handler for websockets. Only for webserver mode. Will have no effect when running as FCGI or SCGI.
-func (s *Server) Websocket(route string, httpHandler websocket.Handler) {
-	s.addRoute(route, "GET", httpHandler)
-}
+//func (s *Server) Websocket(route string, httpHandler websocket.Handler) {
+//	s.addRoute(route, "GET", httpHandler)
+//}
 
 // Run starts the web application and serves HTTP requests for s
 func (s *Server) Run(addr string) {
@@ -154,7 +209,11 @@ func (s *Server) Run(addr string) {
 		panic(err)
 	}
 	s.l = l
-	err = http.Serve(s.l, mux)
+
+	srv := &http.Server{Handler: mux}
+	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
+	err = srv.Serve(s.l)
+	//	err = http.Serve(s.l, mux)
 	if err != nil {
 		panic(err)
 	}
@@ -189,36 +248,208 @@ func (s *Server) RunTLS(addr string, config *tls.Config) {
 	if err != nil {
 		panic(err)
 	}
-
 	s.l = l
-	err = http.Serve(s.l, mux)
+	srv := &http.Server{Handler: mux}
+	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
+	err = srv.Serve(s.l)
+	//	err = http.Serve(s.l, mux)
 	if err != nil {
 		panic(err)
 	}
 }
 
-// Close stops server s.
-func (s *Server) Close() {
-	if s.l != nil {
-		s.l.Close()
+func (s *Server) RunMux(wg *sync.WaitGroup, addr string) {
+	s.initServer()
+	err := s.startListen(1, addr)
+	if err != nil {
+		panic(err)
 	}
+	s.wg = wg
+	wg.Add(1)
+	go s.working(addr)
 }
 
-// safelyCall invokes `function` in recover block
-func (s *Server) safelyCall(function reflect.Value, args []reflect.Value) (resp []reflect.Value, e interface{}) {
+func (s *Server) working(addr string) {
 	defer func() {
-		if err := recover(); err != nil {
-			if !s.Config.RecoverPanic {
-				// go back to panic
-				panic(err)
-			} else {
-				e = err
-				resp = nil
-				s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v\nStack:\n%s", err, debug.Stack())
+		if !s.Closed() {
+			if e := recover(); e != nil {
+				s.Logger.Errorf("recover http error:%s", e)
+			}
+			//尝试重连
+			err := s.startListen(MAXN_RETRY_TIMES, addr)
+			if err != nil { //重连失败
+				s.Close()
+			} else { //重连成功，继续工作
+				go s.working(addr)
+			}
+		} else {
+			if e := recover(); e != nil {
+				s.Logger.Debugf("recover http error=%+v", e)
 			}
 		}
 	}()
-	return function.Call(args), nil
+	mux := http.NewServeMux()
+	if s.Config.Profiler {
+		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	}
+	mux.Handle("/", s)
+	srv := &http.Server{Handler: mux}
+	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
+	err := srv.Serve(s.l)
+	//	err = http.Serve(s.l, mux)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (s *Server) startListen(trytime int, addr string) error {
+	s.Logger.Printf(golog.LEVEL_INFO, "http serving %s", addr)
+	trytime--
+	err := func() error {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
+		s.l = l
+		return nil
+	}()
+	if err != nil {
+		if trytime > 0 {
+			time.Sleep(1 * time.Second)
+			s.Logger.Errorf("tcp: Listen error:%s; retrying %d", err, trytime+1)
+			return s.startListen(trytime, addr)
+		} else {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunTLS starts the web application and serves HTTPS requests for s.
+func (s *Server) RunTLSMux(wg *sync.WaitGroup, addr string, config *tls.Config) {
+	s.initServer()
+	err := s.startListenTLS(1, addr, config)
+	if err != nil {
+		panic(err)
+	}
+	s.wg = wg
+	wg.Add(1)
+	go s.workingTls(addr, config)
+}
+
+func (s *Server) workingTls(addr string, config *tls.Config) {
+	defer func() {
+		if !s.Closed() {
+			if e := recover(); e != nil {
+				s.Logger.Debugf("recover http error:%s", e)
+			}
+			//尝试重连
+			err := s.startListenTLS(MAXN_RETRY_TIMES, addr, config)
+			if err != nil { //重连失败
+				s.Close()
+			} else { //重连成功，继续工作
+				go s.workingTls(addr, config)
+			}
+		} else {
+			if e := recover(); e != nil {
+				s.Logger.Debugf("recover http error:%s", e)
+			}
+		}
+	}()
+	mux := http.NewServeMux()
+	mux.Handle("/", s)
+	srv := &http.Server{Handler: mux}
+	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
+	err := srv.Serve(s.l)
+	//	err = http.Serve(s.l, mux)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (s *Server) startListenTLS(trytime int, addr string, config *tls.Config) error {
+	s.Logger.Printf(golog.LEVEL_INFO, "http serving %s", addr)
+	trytime--
+	err := func() error {
+		l, err := tls.Listen("tcp", addr, config)
+		if err != nil {
+			return err
+		}
+		s.l = l
+		return nil
+	}()
+	if err != nil {
+		if trytime > 0 {
+			time.Sleep(1 * time.Second)
+			s.Logger.Errorf("tcp: Listen error:%s; retrying %v", err, trytime+1)
+			return s.startListenTLS(trytime, addr, config)
+		} else {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close stops server s.
+func (s *Server) Close() {
+	s.stopOnce.Do(func() {
+		defer func() { recover() }()
+		s.stopD.SetDone()
+		if s.wg != nil {
+			s.wg.Done()
+		}
+		if s.l != nil {
+			s.l.Close()
+		}
+	})
+}
+
+func (s *Server) Closed() bool {
+	return s.stopD.R().Done()
+}
+
+// safelyCall invokes `function` in recover block
+func (s *Server) safelyCall(function reflect.Value, args []reflect.Value) (resp []reflect.Value, err interface{}) {
+	defer func() {
+		if e := recover(); e != nil {
+			if !s.Config.RecoverPanic {
+				// go back to panic
+				panic(e)
+			} else {
+				err = e
+				resp = nil
+				s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", err)
+			}
+		}
+	}()
+	resp = function.Call(args)
+	return
+}
+
+func (s *Server) safelyCtxHandler(handler ContextHandler, ctx *Context) (resp []reflect.Value, err interface{}) {
+	defer func() {
+		if e := recover(); e != nil {
+			if !s.Config.RecoverPanic {
+				// go back to panic
+				panic(e)
+			} else {
+				err = e
+				resp = nil
+				s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", err)
+			}
+		}
+	}()
+	var ret interface{}
+	ret, err = handler.ContextHandle(ctx)
+	if err != nil {
+		return
+	}
+	resp = []reflect.Value{reflect.ValueOf(ret)}
+	return
 }
 
 // requiresContext determines whether 'handlerType' contains
@@ -349,38 +580,58 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			// We can not handle custom http handlers here, give back to the caller.
 			return
 		}
-
-		var args []reflect.Value
-		handlerType := route.handler.Type()
-		if requiresContext(handlerType) {
-			args = append(args, reflect.ValueOf(&ctx))
+		var ret []reflect.Value
+		var err interface{}
+		if route.contextHandler != nil {
+			ret, err = s.safelyCtxHandler(route.contextHandler, &ctx)
+		} else {
+			var args []reflect.Value
+			handlerType := route.handler.Type()
+			if requiresContext(handlerType) {
+				args = append(args, reflect.ValueOf(&ctx))
+			}
+			for _, arg := range match[1:] {
+				args = append(args, reflect.ValueOf(arg))
+			}
+			ret, err = s.safelyCall(route.handler, args)
 		}
-		for _, arg := range match[1:] {
-			args = append(args, reflect.ValueOf(arg))
-		}
-
-		ret, err := s.safelyCall(route.handler, args)
 		if err != nil {
 			//there was an error or panic while calling the handler
-			ctx.Abort(500, "Server Error")
+			//			ctx.Abort(500, "Server Error")
+			switch e := err.(type) {
+			case string:
+				ctx.Abort(500, e)
+			case error:
+				ctx.Abort(500, e.Error())
+			default:
+				bb, err1 := json.Marshal(err)
+				if err1 == nil {
+					ctx.SetHeader("Content-Type", "application/json", true)
+					ctx.AbortBytes(500, bb)
+				} else {
+					ctx.Abort(500, fmt.Sprintf("%+v", err))
+				}
+			}
 		}
 		if len(ret) == 0 {
 			return
 		}
-
 		sval := ret[0]
-
 		var content []byte
-
 		if sval.Kind() == reflect.String {
 			content = []byte(sval.String())
 		} else if sval.Kind() == reflect.Slice && sval.Type().Elem().Kind() == reflect.Uint8 {
 			content = sval.Interface().([]byte)
+		} else {
+			bb, err1 := json.Marshal(sval.Interface())
+			if err1 == nil {
+				ctx.SetHeader("Content-Type", "application/json", true)
+				content = bb
+			}
 		}
-		ctx.SetHeader("Content-Length", strconv.Itoa(len(content)), true)
-		_, err = ctx.ResponseWriter.Write(content)
-		if err != nil {
-			ctx.Server.Logger.Printf(golog.LEVEL_ERROR, "Error during write:%+v\nStack:\n%s", err, debug.Stack())
+		if content != nil {
+			ctx.SetHeader("Content-Length", strconv.Itoa(len(content)), true)
+			ctx.WriteBytes(content)
 		}
 		return
 	}

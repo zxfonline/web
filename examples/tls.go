@@ -63,7 +63,10 @@ func main() {
 		return
 	}
 
-	// you must access the server with an HTTP address, i.e https://localhost:9999/world
-	web.Get("/(.*)", hello)
+	// you must access the server with an HTTP address, i.e https://localhost:9999/hello/world
+	web.Get("/hello/(.*)", hello)
+	web.Get("/close", func() {
+		web.Close()
+	})
 	web.RunTLS("0.0.0.0:9999", &config)
 }

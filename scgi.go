@@ -45,7 +45,7 @@ func (conn *scgiConn) WriteHeader(status int) {
 		conn.wroteHeaders = true
 
 		var buf bytes.Buffer
-		text := statusText[status]
+		text := http.StatusText(status)
 
 		fmt.Fprintf(&buf, "HTTP/1.1 %d %s\r\n", status, text)
 
@@ -169,7 +169,6 @@ func (s *Server) listenAndServeScgi(addr string) error {
 		s.Logger.Printf(golog.LEVEL_ERROR, "SCGI listen error=%s", err.Error())
 		return err
 	}
-
 	for {
 		fd, err := l.Accept()
 		if err != nil {

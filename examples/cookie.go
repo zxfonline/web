@@ -48,5 +48,8 @@ func update(ctx *web.Context) {
 func main() {
 	web.Get("/", index)
 	web.Post("/update", update)
+	web.Get("/close", func() {
+		web.Close()
+	})
 	web.Run("0.0.0.0:9999")
 }
