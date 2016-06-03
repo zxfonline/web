@@ -8,30 +8,36 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zxfonline/chanutil"
+	"github.com/zxfonline/fileutil"
 	"github.com/zxfonline/golog"
 	"github.com/zxfonline/json"
+	"github.com/zxfonline/servercore/gerror"
 	//	"golang.org/x/net/websocket"
 )
 
-var HTTP_HEAD = "webserver"
+var HTTP_HEAD = "zxfonline@sina.com web server"
 
 const MAXN_RETRY_TIMES = 60
 
 // ServerConfig is configuration for server objects.
 type ServerConfig struct {
-	StaticDir    string
-	CookieSecret string
-	RecoverPanic bool
-	Profiler     bool
+	StaticDir      string
+	CookieSecret   string
+	RecoverPanic   bool
+	Profiler       bool
+	KeepAlive      bool
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	MaxHeaderBytes int
 }
 
 // Server represents a web.go server.
@@ -47,8 +53,31 @@ type Server struct {
 	wg       *sync.WaitGroup
 }
 
+func SetKeepAlive(KeepAlive bool) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.KeepAlive = KeepAlive
+	}
+}
+func SetReadTimeout(ReadTimeout time.Duration) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.ReadTimeout = ReadTimeout
+	}
+}
+func SetWriteTimeout(WriteTimeout time.Duration) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.WriteTimeout = WriteTimeout
+	}
+}
+
+func SetMaxHeaderBytes(MaxHeaderBytes int) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.MaxHeaderBytes = MaxHeaderBytes
+	}
+}
+
 func SetStaticDir(StaticDir string) func(*ServerConfig) {
 	return func(cfg *ServerConfig) {
+		StaticDir = filepath.ToSlash(StaticDir)
 		cfg.StaticDir = StaticDir
 	}
 }
@@ -68,7 +97,14 @@ func SetProfiler(Profiler bool) func(*ServerConfig) {
 	}
 }
 func NewServerConfig(options ...func(*ServerConfig)) *ServerConfig {
-	cfg := new(ServerConfig)
+	cfg := &ServerConfig{
+		MaxHeaderBytes: 1 << 20, //1M
+		WriteTimeout:   15 * time.Second,
+		ReadTimeout:    15 * time.Second,
+		RecoverPanic:   true,
+		Profiler:       false,
+		KeepAlive:      false,
+	}
 	for _, option := range options {
 		option(cfg)
 	}
@@ -98,11 +134,11 @@ func NewServer(options ...func(*Server)) *Server {
 
 func (s *Server) initServer() {
 	if s.Config == nil {
-		s.Config = &ServerConfig{}
+		s.Config = NewServerConfig()
 	}
 
 	if s.Logger == nil {
-		s.Logger = golog.New("httpserver")
+		s.Logger = golog.New("HttpServer")
 	}
 }
 
@@ -117,27 +153,101 @@ type route struct {
 	handler        reflect.Value
 	httpHandler    http.Handler
 	contextHandler ContextHandler
+	svc            *Service
+}
+
+type Service struct {
+	method reflect.Value
+}
+
+func isEmptyValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Ptr:
+		return v.IsNil()
+	}
+	return false
+}
+
+func isNil(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	}
+	return false
+}
+
+func (s *Service) ServiceCall(ctx *Context, args ...reflect.Value) (robj interface{}, err error) {
+	ret := s.call(ctx, args...)
+	if len(ret) == 0 {
+		return
+	}
+	//默认支持两个返回参数(interface{},error)
+	if len(ret) > 1 { //默认判定最后一个返回值为error类型
+		var ok bool
+		if err, ok = ret[len(ret)-1].Interface().(error); ok {
+			return
+		}
+	}
+	//默认第一个返回值为结果
+	robj = ret[0].Interface()
+	return
+}
+
+func (s *Service) call(ctx *Context, args ...reflect.Value) []reflect.Value {
+	var targs []reflect.Value
+	if requiresContext(s.method.Type()) {
+		targs = append(targs, reflect.ValueOf(ctx))
+	}
+	if len(args) > 0 {
+		targs = append(targs, args...)
+	}
+	return s.method.Call(targs)
+}
+
+//根据结构体的方法名注册为http服务方法 handler's kind must be ptr
+func InvokeService(handler interface{}, methodname string) *Service {
+	rv := reflect.ValueOf(handler)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() || !rv.IsValid() {
+		panic(fmt.Errorf(`invoke service %s'%s error,handler's kind must be ptr`, reflect.TypeOf(handler).Name(), methodname))
+	}
+	rtm := rv.MethodByName(methodname)
+	if rtm.Kind() != reflect.Func {
+		panic(fmt.Errorf(`invoke service %s'%s error,method can not access`, reflect.Indirect(rv).Type().Name(), methodname))
+	}
+	return &Service{
+		method: rtm,
+	}
 }
 
 func (s *Server) addRoute(r string, method string, handler interface{}) {
 	cr, err := regexp.Compile(r)
 	if err != nil {
-		s.Logger.Printf(golog.LEVEL_ERROR, "Error in route regex %s\nStack:\n%s", r, debug.Stack())
+		s.Logger.Printf(golog.LEVEL_ERROR, "Error in route regex %s", r)
 		return
 	}
-
-	switch handler.(type) {
+	switch v := handler.(type) {
 	case http.Handler:
-		s.routes = append(s.routes, route{r: r, cr: cr, method: method, httpHandler: handler.(http.Handler)})
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, httpHandler: v})
 	case ContextHandler:
-		s.routes = append(s.routes, route{r: r, cr: cr, method: method, contextHandler: handler.(ContextHandler)})
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, contextHandler: v})
+	case *Service:
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, svc: v})
 	case reflect.Value:
-		fv := handler.(reflect.Value)
-		s.routes = append(s.routes, route{r: r, cr: cr, method: method, handler: fv})
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, handler: v})
 	default:
-		fv := reflect.ValueOf(handler)
-		s.routes = append(s.routes, route{r: r, cr: cr, method: method, handler: fv})
+		s.routes = append(s.routes, route{r: r, cr: cr, method: method, handler: reflect.ValueOf(handler)})
 	}
+	s.Logger.Printf(golog.LEVEL_INFO, "Regist http service handler=%s,method=%s", r, method)
 }
 
 // ServeHTTP is the interface method for Go's http server package
@@ -194,9 +304,10 @@ func (s *Server) Run(addr string) {
 
 	mux := http.NewServeMux()
 	if s.Config.Profiler {
+		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
 		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
 		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
 		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
 		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
 	}
@@ -210,9 +321,16 @@ func (s *Server) Run(addr string) {
 	}
 	s.l = l
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:        mux,
+		ReadTimeout:    s.Config.ReadTimeout,
+		WriteTimeout:   s.Config.WriteTimeout,
+		MaxHeaderBytes: s.Config.MaxHeaderBytes,
+	}
+	srv.SetKeepAlivesEnabled(s.Config.KeepAlive)
 	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
 	err = srv.Serve(s.l)
+	s.l = nil
 	//	err = http.Serve(s.l, mux)
 	if err != nil {
 		panic(err)
@@ -249,7 +367,13 @@ func (s *Server) RunTLS(addr string, config *tls.Config) {
 		panic(err)
 	}
 	s.l = l
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:        mux,
+		ReadTimeout:    s.Config.ReadTimeout,
+		WriteTimeout:   s.Config.WriteTimeout,
+		MaxHeaderBytes: s.Config.MaxHeaderBytes,
+	}
+	srv.SetKeepAlivesEnabled(s.Config.KeepAlive)
 	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
 	err = srv.Serve(s.l)
 	//	err = http.Serve(s.l, mux)
@@ -290,16 +414,24 @@ func (s *Server) working(addr string) {
 	}()
 	mux := http.NewServeMux()
 	if s.Config.Profiler {
+		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
 		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
 		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
 		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
 		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
 	}
 	mux.Handle("/", s)
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:        mux,
+		ReadTimeout:    s.Config.ReadTimeout,
+		WriteTimeout:   s.Config.WriteTimeout,
+		MaxHeaderBytes: s.Config.MaxHeaderBytes,
+	}
+	srv.SetKeepAlivesEnabled(s.Config.KeepAlive)
 	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
 	err := srv.Serve(s.l)
+	s.l = nil
 	//	err = http.Serve(s.l, mux)
 	if err != nil {
 		panic(err)
@@ -310,6 +442,10 @@ func (s *Server) startListen(trytime int, addr string) error {
 	s.Logger.Printf(golog.LEVEL_INFO, "http serving %s", addr)
 	trytime--
 	err := func() error {
+		if s.l != nil {
+			s.l.Close()
+			s.l = nil
+		}
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			return err
@@ -362,9 +498,16 @@ func (s *Server) workingTls(addr string, config *tls.Config) {
 	}()
 	mux := http.NewServeMux()
 	mux.Handle("/", s)
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:        mux,
+		ReadTimeout:    s.Config.ReadTimeout,
+		WriteTimeout:   s.Config.WriteTimeout,
+		MaxHeaderBytes: s.Config.MaxHeaderBytes,
+	}
+	srv.SetKeepAlivesEnabled(s.Config.KeepAlive)
 	srv.ErrorLog = log.New(s.Logger.Out, fmt.Sprintf("%s %s ", golog.LevelString[golog.LEVEL_ERROR], s.Logger.Name), s.Logger.Flag)
 	err := srv.Serve(s.l)
+	s.l = nil
 	//	err = http.Serve(s.l, mux)
 	if err != nil {
 		panic(err)
@@ -375,6 +518,10 @@ func (s *Server) startListenTLS(trytime int, addr string, config *tls.Config) er
 	s.Logger.Printf(golog.LEVEL_INFO, "http serving %s", addr)
 	trytime--
 	err := func() error {
+		if s.l != nil {
+			s.l.Close()
+			s.l = nil
+		}
 		l, err := tls.Listen("tcp", addr, config)
 		if err != nil {
 			return err
@@ -404,6 +551,7 @@ func (s *Server) Close() {
 		}
 		if s.l != nil {
 			s.l.Close()
+			s.l = nil
 		}
 	})
 }
@@ -422,11 +570,38 @@ func (s *Server) safelyCall(function reflect.Value, args []reflect.Value) (resp 
 			} else {
 				err = e
 				resp = nil
-				s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", err)
+				switch e.(type) {
+				case *gerror.SysError:
+					s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", e)
+				default:
+					s.Logger.Printf(golog.LEVEL_DEBUG, "Handler crashed with content=%+v", e)
+				}
 			}
 		}
 	}()
 	resp = function.Call(args)
+	return
+}
+
+func (s *Server) safelyServiceCall(svc *Service, ctx *Context, args ...reflect.Value) (resp []reflect.Value, err interface{}) {
+	defer func() {
+		if e := recover(); e != nil {
+			if !s.Config.RecoverPanic {
+				// go back to panic
+				panic(e)
+			} else {
+				err = e
+				resp = nil
+				switch e.(type) {
+				case *gerror.SysError:
+					s.Logger.Printf(golog.LEVEL_DEBUG, "Handler crashed with content=%+v", e)
+				default:
+					s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", e)
+				}
+			}
+		}
+	}()
+	resp = svc.call(ctx, args...)
 	return
 }
 
@@ -438,17 +613,29 @@ func (s *Server) safelyCtxHandler(handler ContextHandler, ctx *Context) (resp []
 				panic(e)
 			} else {
 				err = e
-				resp = nil
-				s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", err)
+				switch e.(type) {
+				case *gerror.SysError:
+					s.Logger.Printf(golog.LEVEL_DEBUG, "Handler crashed with content=%+v", e)
+				default:
+					s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", e)
+				}
 			}
 		}
 	}()
-	var ret interface{}
-	ret, err = handler.ContextHandle(ctx)
-	if err != nil {
+	ret, err1 := handler.ContextHandle(ctx)
+	if ret == nil && err1 != nil {
+		ret = err1
+	}
+	if ret == nil {
 		return
 	}
-	resp = []reflect.Value{reflect.ValueOf(ret)}
+	var rv reflect.Value
+	if reflect.TypeOf(ret).Kind() == reflect.Ptr {
+		rv = reflect.ValueOf(ret)
+	} else {
+		rv = reflect.ValueOf(&ret)
+	}
+	resp = []reflect.Value{rv}
 	return
 }
 
@@ -482,14 +669,14 @@ func requiresContext(handlerType reflect.Type) bool {
 func (s *Server) tryServingFile(name string, req *http.Request, w http.ResponseWriter) bool {
 	//try to serve a static file
 	if s.Config.StaticDir != "" {
-		staticFile := path.Join(s.Config.StaticDir, name)
+		staticFile := fileutil.PathJoin(s.Config.StaticDir, name)
 		if fileExists(staticFile) {
 			http.ServeFile(w, req, staticFile)
 			return true
 		}
 	} else {
 		for _, staticDir := range defaultStaticDirs {
-			staticFile := path.Join(staticDir, name)
+			staticFile := fileutil.PathJoin(staticDir, name)
 			if fileExists(staticFile) {
 				http.ServeFile(w, req, staticFile)
 				return true
@@ -535,7 +722,7 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 
 	//set some default headers
 	ctx.SetHeader("Server", HTTP_HEAD, true)
-	tm := time.Now().UTC()
+	tm := time.Now()
 
 	//ignore errors from ParseForm because it's usually harmless.
 	req.ParseForm()
@@ -548,6 +735,8 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 	defer s.logRequest(ctx, tm)
 
 	ctx.SetHeader("Date", webTime(tm), true)
+	//	ctx.SetCacheControl(0)
+	//	ctx.SetLastModified(tm)
 
 	if req.Method == "GET" || req.Method == "HEAD" {
 		if s.tryServingFile(requestPath, req, w) {
@@ -584,6 +773,12 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 		var err interface{}
 		if route.contextHandler != nil {
 			ret, err = s.safelyCtxHandler(route.contextHandler, &ctx)
+		} else if route.svc != nil {
+			var args []reflect.Value
+			for _, arg := range match[1:] {
+				args = append(args, reflect.ValueOf(arg))
+			}
+			ret, err = s.safelyServiceCall(route.svc, &ctx, args...)
 		} else {
 			var args []reflect.Value
 			handlerType := route.handler.Type()
@@ -596,43 +791,51 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			ret, err = s.safelyCall(route.handler, args)
 		}
 		if err != nil {
-			//there was an error or panic while calling the handler
-			//			ctx.Abort(500, "Server Error")
-			switch e := err.(type) {
-			case string:
-				ctx.Abort(500, e)
-			case error:
-				ctx.Abort(500, e.Error())
-			default:
+			switch err.(type) {
+			case *gerror.SysError:
 				bb, err1 := json.Marshal(err)
 				if err1 == nil {
-					ctx.SetHeader("Content-Type", "application/json", true)
-					ctx.AbortBytes(500, bb)
+					ctx.SetHeader("Content-Length", strconv.Itoa(len(bb)), true)
+					ctx.WriteBytes(bb)
+					//					ctx.AbortBytes(http.StatusInternalServerError, bb)
 				} else {
-					ctx.Abort(500, fmt.Sprintf("%+v", err))
+					ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 				}
+			default:
+				ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			}
+			return
 		}
 		if len(ret) == 0 {
 			return
 		}
+		//默认支持两个返回参数(interface{},error)
 		sval := ret[0]
-		var content []byte
-		if sval.Kind() == reflect.String {
-			content = []byte(sval.String())
-		} else if sval.Kind() == reflect.Slice && sval.Type().Elem().Kind() == reflect.Uint8 {
-			content = sval.Interface().([]byte)
-		} else {
-			bb, err1 := json.Marshal(sval.Interface())
+		if len(ret) > 1 { //默认判定最后一个返回值为error类型
+			if _, ok := ret[len(ret)-1].Interface().(error); ok {
+				sval = ret[len(ret)-1]
+			}
+		}
+		if isNil(sval) {
+			return
+		}
+		content, ok := asBytes(nil, sval)
+		if !ok {
+			v := sval.Interface()
+			switch v.(type) {
+			case *gerror.SysError:
+			case error:
+				v = gerror.New(gerror.CUSTOM_ERROR, v.(error))
+			default:
+			}
+			bb, err1 := json.Marshal(v)
 			if err1 == nil {
-				ctx.SetHeader("Content-Type", "application/json", true)
 				content = bb
 			}
 		}
-		if content != nil {
-			ctx.SetHeader("Content-Length", strconv.Itoa(len(content)), true)
-			ctx.WriteBytes(content)
-		}
+
+		ctx.SetHeader("Content-Length", strconv.Itoa(len(content)), true)
+		ctx.WriteBytes(content)
 		return
 	}
 
@@ -644,7 +847,32 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			return
 		}
 	}
-	ctx.Abort(404, "Page not found")
+	ctx.NotFound(http.StatusText(http.StatusNotFound))
+	return
+}
+
+func asBytes(buf []byte, rv reflect.Value) (b []byte, ok bool) {
+	switch rv.Kind() {
+	case reflect.Ptr:
+		return asBytes(buf, rv.Elem())
+	case reflect.Slice:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return rv.Bytes(), true
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.AppendInt(buf, rv.Int(), 10), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.AppendUint(buf, rv.Uint(), 10), true
+	case reflect.Float32:
+		return strconv.AppendFloat(buf, rv.Float(), 'g', -1, 32), true
+	case reflect.Float64:
+		return strconv.AppendFloat(buf, rv.Float(), 'g', -1, 64), true
+	case reflect.Bool:
+		return strconv.AppendBool(buf, rv.Bool()), true
+	case reflect.String:
+		s := rv.String()
+		return append(buf, s...), true
+	}
 	return
 }
 

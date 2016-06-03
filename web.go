@@ -105,7 +105,7 @@ func (ctx *Context) ContentType(val string) string {
 		ctype = mime.TypeByExtension(val)
 	}
 	if ctype != "" {
-		ctx.Header().Set("Content-Type", ctype)
+		ctx.SetHeader("Content-Type", ctype, true)
 	}
 	return ctype
 }
@@ -123,6 +123,24 @@ func (ctx *Context) SetHeader(hdr string, val string, unique bool) {
 // SetCookie adds a cookie header to the response.
 func (ctx *Context) SetCookie(cookie *http.Cookie) {
 	ctx.SetHeader("Set-Cookie", cookie.String(), false)
+}
+
+func (ctx *Context) SetExpires(expires time.Duration) {
+	ctx.SetHeader("Expires", webTime(time.Now().Add(expires)), true)
+}
+
+func (ctx *Context) SetCacheControl(expires time.Duration) {
+	if expires > time.Second {
+		ctx.SetHeader("Expires", webTime(time.Now().Add(expires)), true)
+		ctx.SetHeader("Cache-Control", fmt.Sprintf("max-age=%d", int(expires.Seconds())), true)
+	} else {
+		ctx.SetHeader("Expires", webTime(time.Now()), true)
+		ctx.SetHeader("Cache-Control", "no-cache", true)
+	}
+}
+
+func (ctx *Context) SetLastModified(modtime time.Time) {
+	ctx.SetHeader("Last-Modified", webTime(modtime), true)
 }
 
 func getCookieSig(key string, val []byte, timestamp string) string {
@@ -267,6 +285,6 @@ func SetLogger(logger *golog.Logger) {
 	mainServer.Logger = logger
 }
 
-var Config = NewServerConfig(SetRecoverPanic(true))
-
-var mainServer = NewServer(SetServerConfig(Config))
+var Config = NewServerConfig()
+var Logger = golog.New("HttpServer")
+var mainServer = NewServer(SetServerConfig(Config), SetServerLogger(Logger))
