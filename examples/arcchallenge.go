@@ -23,7 +23,7 @@ func main() {
 	web.Post("/say", func(ctx *web.Context) string {
 		uid := fmt.Sprintf("%d\n", rand.Int63())
 		ctx.SetSecureCookie("user", uid, 3600)
-		users[uid] = ctx.Params["said"]
+		users[uid] = ctx.Param("said")
 		return `<a href="/final">Click Here</a>`
 	})
 	web.Get("/final", func(ctx *web.Context) string {

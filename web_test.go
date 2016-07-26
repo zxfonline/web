@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zxfonline/gerror"
 	"github.com/zxfonline/json"
-	"github.com/zxfonline/servercore/gerror"
 
 	"github.com/zxfonline/golog"
 )
@@ -144,7 +144,7 @@ func init() {
 	Get("/echo/(.*)", func(s string) string { return s })
 	Get("/multiecho/(.*)/(.*)/(.*)/(.*)", func(a, b, c, d string) string { return a + b + c + d })
 	Post("/post/echo/(.*)", func(s string) string { return s })
-	Post("/post/echoparam/(.*)", func(ctx *Context, name string) string { return ctx.Params[name] })
+	Post("/post/echoparam/(.*)", func(ctx *Context, name string) string { return ctx.Param(name) })
 
 	Get("/error/code/(.*)", func(ctx *Context, code string) string {
 		n, _ := strconv.Atoi(code)
@@ -181,7 +181,7 @@ func init() {
 		}
 		return val
 	})
-	Get("/getparam", func(ctx *Context) string { return ctx.Params["a"] })
+	Get("/getparam", func(ctx *Context) string { return ctx.Param("a") })
 	Get("/fullparams", func(ctx *Context) string {
 		return strings.Join(ctx.Request.Form["a"], ",")
 	})
@@ -207,11 +207,11 @@ func init() {
 		return tmp.A + " " + tmp.B
 	})
 
-	Match("OPTIONS", "/options", func(ctx *Context) {
+	Match("/options", func(ctx *Context) {
 		ctx.SetHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS", true)
 		ctx.SetHeader("Access-Control-Max-Age", "1000", true)
 		ctx.WriteHeader(200)
-	})
+	}, "OPTIONS")
 
 	Get("/dupeheader", func(ctx *Context) string {
 		ctx.SetHeader("Server", "myserver", true)
@@ -252,9 +252,9 @@ var tests = []Test{
 	{"GET", "/getparam?a=abcd", nil, "", 200, "abcd"},
 	{"GET", "/getparam?b=abcd", nil, "", 200, ""},
 	{"GET", "/fullparams?a=1&a=2&a=3", nil, "", 200, "1,2,3"},
-	{"GET", "/panic", nil, "", 500, "Internal Server Error"},
-	{"GET", "/panic1", nil, "", 200, `{"ret":10000,"msg":"access refused"}`},
-	{"GET", "/panic2", nil, "", 200, `{"ret":10000,"msg":"panic2 error"}`},
+	{"GET", "/panic", nil, "", 500, `{"ret":100003,"result":"0"}`},
+	{"GET", "/panic1", nil, "", 200, `{"ret":100000,"result":"access refused"}`},
+	{"GET", "/panic2", nil, "", 200, `{"ret":100000,"result":"panic2 error"}`},
 	{"GET", "/json?a=1&b=2", nil, "", 200, `{"a":"1","b":"2"}`},
 	{"GET", "/jsonbytes?a=1&b=2", nil, "", 200, `{"a":"1","b":"2"}`},
 	{"POST", "/parsejson", map[string][]string{"Content-Type": {"application/json"}}, `{"a":"hello", "b":"world"}`, 200, "hello world"},

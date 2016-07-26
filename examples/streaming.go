@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zxfonline/gerror"
 	"github.com/zxfonline/httplib"
-	"github.com/zxfonline/servercore/gerror"
 	"github.com/zxfonline/web"
 )
 
@@ -122,6 +122,10 @@ func main() {
 	s1.MAP[2] = &SS{Name: "map1 name12"}
 	web.Get("/hello1", s1)
 	web.Get("/testa", test1)
+	web.Get("/no", func(ctx *web.Context) {
+		fmt.Println("no return")
+		ctx.NotFound(http.StatusText(http.StatusNotFound))
+	})
 
 	wg.Add(1)
 	go web.Run("0.0.0.0:9999")
@@ -135,7 +139,7 @@ func main() {
 func TestSimplePost() {
 	v := "zxf"
 
-	req := httplib.Get("http://127.0.0.1:9999/close")
+	req := httplib.Get("http://127.0.0.1:9999/no")
 	req.Param("username", v)
 
 	str, err := req.String()

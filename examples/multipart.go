@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/zxfonline/json"
 	"github.com/zxfonline/web"
 )
 
@@ -36,14 +37,28 @@ var page = `
 </html>
 `
 
+var page1 = `
+<html>
+<head><title>Multipart Test</title></head>
+<body>
+<form action="/jsonret" method="POST">
+<label for="input1"> Please write some text </label>
+<textarea name="input1" rows="10" cols="30" ></textarea>
+<input type="submit" name="Submit" value="Submit"/>
+</form>
+</body>
+</html>
+`
+
 func index() string { return page }
 
 func multipart(ctx *web.Context) string {
-	ctx.Request.ParseMultipartForm(10 * 1024 * 1024)
 	form := ctx.Request.MultipartForm
 	var output bytes.Buffer
 	output.WriteString("<p>input1: " + form.Value["input1"][0] + "</p>")
 	output.WriteString("<p>input2: " + form.Value["input2"][0] + "</p>")
+	output.WriteString("<p>input1: " + ctx.Param("input1") + "</p>")
+	output.WriteString("<p>input2: " + ctx.Param("input2") + "</p>")
 
 	fileHeader := form.File["file"][0]
 	filename := fileHeader.Filename
@@ -56,9 +71,28 @@ func multipart(ctx *web.Context) string {
 	return output.String()
 }
 
+func jsonret(ctx *web.Context) string {
+	var output bytes.Buffer
+	kv := make(map[string]string)
+	err := json.Unmarshal([]byte(ctx.Param("input1")), &kv)
+	if err != nil {
+		panic(err)
+	}
+	output.WriteString("<p>input1: " + ctx.Param("input1") + "</p>")
+	bb, err1 := json.Marshal(kv)
+	if err1 != nil {
+		panic(err1)
+	}
+	output.WriteString("<p>inputjson: " + string(bb) + "</p>")
+	return output.String()
+}
+
+func jsonC(ctx *web.Context) string { return page1 }
 func main() {
 	web.Get("/", index)
 	web.Post("/multipart", multipart)
+	web.Get("/json", jsonC)
+	web.Post("/jsonret", jsonret)
 	web.Get("/close", func() {
 		web.Close()
 	})

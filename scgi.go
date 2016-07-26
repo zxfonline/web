@@ -99,7 +99,7 @@ func (s *Server) readScgiRequest(fd io.ReadWriteCloser) (*http.Request, error) {
 	reader := bufio.NewReader(fd)
 	line, err := reader.ReadString(':')
 	if err != nil {
-		s.Logger.Printf(golog.LEVEL_WARN, "Error during SCGI read:%s", err.Error())
+		s.Logger.Printf(golog.LEVEL_WARN, "Error during SCGI read:%v", err)
 	}
 	length, _ := strconv.Atoi(line[0 : len(line)-1])
 	if length > 16384 {
@@ -142,7 +142,7 @@ func (s *Server) readScgiRequest(fd io.ReadWriteCloser) (*http.Request, error) {
 func (s *Server) handleScgiRequest(fd io.ReadWriteCloser) {
 	req, err := s.readScgiRequest(fd)
 	if err != nil {
-		s.Logger.Printf(golog.LEVEL_WARN, "SCGI error=%s", err.Error())
+		s.Logger.Printf(golog.LEVEL_WARN, "SCGI error=%v", err)
 	}
 	sc := scgiConn{fd, req, make(map[string][]string), false}
 	s.routeHandler(req, &sc)
@@ -166,13 +166,13 @@ func (s *Server) listenAndServeScgi(addr string) error {
 	s.l = l
 
 	if err != nil {
-		s.Logger.Printf(golog.LEVEL_ERROR, "SCGI listen error=%s", err.Error())
+		s.Logger.Printf(golog.LEVEL_ERROR, "SCGI listen error=%v", err)
 		return err
 	}
 	for {
 		fd, err := l.Accept()
 		if err != nil {
-			s.Logger.Printf(golog.LEVEL_ERROR, "SCGI accept error=%s", err.Error())
+			s.Logger.Printf(golog.LEVEL_ERROR, "SCGI accept error=%v", err)
 			return err
 		}
 		go s.handleScgiRequest(fd)

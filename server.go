@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"path"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -18,9 +17,9 @@ import (
 
 	"github.com/zxfonline/chanutil"
 	"github.com/zxfonline/fileutil"
+	"github.com/zxfonline/gerror"
 	"github.com/zxfonline/golog"
 	"github.com/zxfonline/json"
-	"github.com/zxfonline/servercore/gerror"
 	//	"golang.org/x/net/websocket"
 )
 
@@ -38,6 +37,7 @@ type ServerConfig struct {
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
 	MaxHeaderBytes int
+	MaxMemory      int64
 }
 
 // Server represents a web.go server.
@@ -51,6 +51,12 @@ type Server struct {
 	stopD    chanutil.DoneChan
 	stopOnce sync.Once
 	wg       *sync.WaitGroup
+}
+
+func SetMaxMemory(MaxMemory int64) func(*ServerConfig) {
+	return func(cfg *ServerConfig) {
+		cfg.MaxMemory = MaxMemory
+	}
 }
 
 func SetKeepAlive(KeepAlive bool) func(*ServerConfig) {
@@ -77,7 +83,7 @@ func SetMaxHeaderBytes(MaxHeaderBytes int) func(*ServerConfig) {
 
 func SetStaticDir(StaticDir string) func(*ServerConfig) {
 	return func(cfg *ServerConfig) {
-		StaticDir = filepath.ToSlash(StaticDir)
+		StaticDir = strings.Replace(StaticDir, "\\", "/", -1)
 		cfg.StaticDir = StaticDir
 	}
 }
@@ -104,6 +110,7 @@ func NewServerConfig(options ...func(*ServerConfig)) *ServerConfig {
 		RecoverPanic:   true,
 		Profiler:       false,
 		KeepAlive:      false,
+		MaxMemory:      1 << 26, //64M
 	}
 	for _, option := range options {
 		option(cfg)
@@ -284,8 +291,15 @@ func (s *Server) Delete(route string, handler interface{}) {
 }
 
 // Match adds a handler for an arbitrary http method for server s.
-func (s *Server) Match(method string, route string, handler interface{}) {
+func (s *Server) Match(route string, handler interface{}, method string) {
 	s.addRoute(route, method, handler)
+}
+
+// Match adds a handler for an arbitrary http method for server s.
+func (s *Server) Matchs(route string, handler interface{}, methods ...string) {
+	for _, method := range methods {
+		s.addRoute(route, method, handler)
+	}
 }
 
 //Adds a custom handler. Only for webserver mode. Will have no effect when running as FCGI or SCGI.
@@ -572,9 +586,9 @@ func (s *Server) safelyCall(function reflect.Value, args []reflect.Value) (resp 
 				resp = nil
 				switch e.(type) {
 				case *gerror.SysError:
-					s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", e)
-				default:
 					s.Logger.Printf(golog.LEVEL_DEBUG, "Handler crashed with content=%+v", e)
+				default:
+					s.Logger.Printf(golog.LEVEL_WARN, "Handler crashed with content=%+v", e)
 				}
 			}
 		}
@@ -719,29 +733,33 @@ func (s *Server) logRequest(ctx Context, sTime time.Time) {
 func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused *route) {
 	requestPath := req.URL.Path
 	ctx := Context{req, map[string]string{}, s, w}
-
 	//set some default headers
 	ctx.SetHeader("Server", HTTP_HEAD, true)
 	tm := time.Now()
-
-	//ignore errors from ParseForm because it's usually harmless.
-	req.ParseForm()
-	if len(req.Form) > 0 {
-		for k, v := range req.Form {
-			ctx.Params[k] = v[0]
-		}
-	}
-
-	defer s.logRequest(ctx, tm)
-
 	ctx.SetHeader("Date", webTime(tm), true)
 	//	ctx.SetCacheControl(0)
 	//	ctx.SetLastModified(tm)
 
 	if req.Method == "GET" || req.Method == "HEAD" {
+		req.ParseForm()
+		if len(req.Form) > 0 {
+			for k, v := range req.Form {
+				ctx.Params[k] = v[0]
+			}
+		}
+		defer s.logRequest(ctx, tm)
+
 		if s.tryServingFile(requestPath, req, w) {
 			return
 		}
+	} else {
+		ctx.ParseFormOrMulitForm(s.Config.MaxMemory)
+		if len(req.Form) > 0 {
+			for k, v := range req.Form {
+				ctx.Params[k] = v[0]
+			}
+		}
+		defer s.logRequest(ctx, tm)
 	}
 
 	//Set the default content-type
@@ -791,17 +809,21 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			ret, err = s.safelyCall(route.handler, args)
 		}
 		if err != nil {
+			stt := http.StatusInternalServerError
 			switch err.(type) {
 			case *gerror.SysError:
-				bb, err1 := json.Marshal(err)
-				if err1 == nil {
-					ctx.SetHeader("Content-Length", strconv.Itoa(len(bb)), true)
-					ctx.WriteBytes(bb)
-					//					ctx.AbortBytes(http.StatusInternalServerError, bb)
-				} else {
-					ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
-				}
+				stt = http.StatusOK
+			case error:
+				err = gerror.New(gerror.SERVER_CMSG_ERROR, err.(error))
 			default:
+				err = gerror.NewError(gerror.SERVER_CMSG_ERROR, fmt.Sprintf("%v", err))
+			}
+			bb, err1 := json.Marshal(err)
+			if err1 == nil {
+				ctx.SetHeader("Content-Type", "application/json; charset=utf-8", true)
+				ctx.SetHeader("Content-Length", strconv.Itoa(len(bb)), true)
+				ctx.AbortBytes(stt, bb)
+			} else {
 				ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			}
 			return
@@ -830,7 +852,11 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			}
 			bb, err1 := json.Marshal(v)
 			if err1 == nil {
+				ctx.SetHeader("Content-Type", "application/json; charset=utf-8", true)
 				content = bb
+			} else {
+				ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+				return
 			}
 		}
 

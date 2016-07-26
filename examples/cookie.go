@@ -37,10 +37,10 @@ func index(ctx *web.Context) string {
 }
 
 func update(ctx *web.Context) {
-	if ctx.Params["submit"] == "Delete" {
+	if ctx.Param("submit") == "Delete" {
 		ctx.SetCookie(web.NewCookie(cookieName, "", -1))
 	} else {
-		ctx.SetCookie(web.NewCookie(cookieName, ctx.Params["cookie"], 0))
+		ctx.SetCookie(web.NewCookie(cookieName, ctx.Param("cookie"), 0))
 	}
 	ctx.Redirect(301, "/")
 }
