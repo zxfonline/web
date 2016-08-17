@@ -23,7 +23,11 @@ import (
 	//	"golang.org/x/net/websocket"
 )
 
-var HTTP_HEAD = "zxfonline@sina.com web server"
+var (
+	RunMode         string // run mode, "dev" or "prod"
+	CopyRequestBody bool
+	HTTP_HEAD       = "zxfonline@sina.com web server"
+)
 
 const MAXN_RETRY_TIMES = 60
 
@@ -732,9 +736,12 @@ func (s *Server) logRequest(ctx Context, sTime time.Time) {
 // with the returned route.
 func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused *route) {
 	requestPath := req.URL.Path
-	ctx := Context{req, map[string]string{}, s, w}
+	ctx := Context{req, []byte{}, map[string]string{}, s, w}
 	//set some default headers
-	ctx.SetHeader("Server", HTTP_HEAD, true)
+
+	if RunMode == "dev" {
+		ctx.SetHeader("Server", HTTP_HEAD, true)
+	}
 	tm := time.Now()
 	ctx.SetHeader("Date", webTime(tm), true)
 	//	ctx.SetCacheControl(0)
@@ -753,6 +760,9 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			return
 		}
 	} else {
+		if CopyRequestBody && !ctx.IsUpload() {
+			ctx.CopyBody()
+		}
 		ctx.ParseFormOrMulitForm(s.Config.MaxMemory)
 		if len(req.Form) > 0 {
 			for k, v := range req.Form {

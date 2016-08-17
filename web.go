@@ -31,6 +31,7 @@ import (
 
 type Context struct {
 	Request *http.Request
+	RequestBody []byte
 	Params  map[string]string
 	Server  *Server
 	http.ResponseWriter
@@ -256,6 +257,7 @@ func (ctx *Context) CopyBody() []byte {
 	ctx.Request.Body.Close()
 	bf := bytes.NewBuffer(requestbody)
 	ctx.Request.Body = ioutil.NopCloser(bf)
+	ctx.RequestBody = requestbody
 	return requestbody
 }
 
