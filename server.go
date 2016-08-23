@@ -515,7 +515,16 @@ func (s *Server) workingTls(addr string, config *tls.Config) {
 		}
 	}()
 	mux := http.NewServeMux()
+	if s.Config.Profiler {
+		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	}
 	mux.Handle("/", s)
+
 	srv := &http.Server{
 		Handler:        mux,
 		ReadTimeout:    s.Config.ReadTimeout,
@@ -564,12 +573,12 @@ func (s *Server) Close() {
 	s.stopOnce.Do(func() {
 		defer func() { recover() }()
 		s.stopD.SetDone()
-		if s.wg != nil {
-			s.wg.Done()
-		}
 		if s.l != nil {
 			s.l.Close()
 			s.l = nil
+		}
+		if s.wg != nil {
+			s.wg.Done()
 		}
 	})
 }
