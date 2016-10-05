@@ -6,15 +6,27 @@ import (
 
 	"github.com/zxfonline/httplib"
 
+	"errors"
+
 	"github.com/zxfonline/web"
+	"golang.org/x/net/trace"
 )
 
 func main() {
 	web.CopyRequestBody = true
-	web.Post("/json", func(ctx *web.Context) string {
+	web.Get("/json", func(ctx *web.Context) string {
+		tr := trace.New("mypkg.json", ctx.Request.URL.Path)
+		defer tr.Finish()
+
 		str := string(ctx.RequestBody)
 		fmt.Println("name:", ctx.ParamStr("name"))
 		fmt.Println("rec:", str)
+
+		tr.LazyPrintf("some event %q happened", str)
+		if ctx.ParamStr("name") != "zxf" {
+			tr.LazyPrintf("somethingImportant failed: %v", errors.New("no,error!"))
+			tr.SetError()
+		}
 		return str
 	})
 	web.Get("/close", func() {
@@ -22,7 +34,7 @@ func main() {
 	})
 	go func() {
 		time.Sleep(1 * time.Second)
-		req := httplib.Post("http://127.0.0.1:9999/json?name=zxf")
+		req := httplib.Get("http://127.0.0.1:9999/json?name=zxf")
 		_, err := req.JsonBody(struct {
 			Key   string
 			Value string

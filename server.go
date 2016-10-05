@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/pprof"
+	_ "net/http/pprof"
 	"path"
 	"reflect"
 	"regexp"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "golang.org/x/net/trace"
 
 	"github.com/zxfonline/chanutil"
 	"github.com/zxfonline/fileutil"
@@ -112,7 +114,7 @@ func NewServerConfig(options ...func(*ServerConfig)) *ServerConfig {
 		WriteTimeout:   15 * time.Second,
 		ReadTimeout:    15 * time.Second,
 		RecoverPanic:   true,
-		Profiler:       false,
+		Profiler:       true,
 		KeepAlive:      false,
 		MaxMemory:      1 << 26, //64M
 	}
@@ -320,14 +322,9 @@ func (s *Server) Handler(route string, method string, httpHandler http.Handler) 
 func (s *Server) Run(addr string) {
 	s.initServer()
 
-	mux := http.NewServeMux()
-	if s.Config.Profiler {
-		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
-		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	mux := http.DefaultServeMux
+	if !s.Config.Profiler {
+		mux = http.NewServeMux()
 	}
 	mux.Handle("/", s)
 
@@ -378,7 +375,10 @@ func (s *Server) RunScgi(addr string) {
 // RunTLS starts the web application and serves HTTPS requests for s.
 func (s *Server) RunTLS(addr string, config *tls.Config) {
 	s.initServer()
-	mux := http.NewServeMux()
+	mux := http.DefaultServeMux
+	if !s.Config.Profiler {
+		mux = http.NewServeMux()
+	}
 	mux.Handle("/", s)
 	l, err := tls.Listen("tcp", addr, config)
 	if err != nil {
@@ -430,14 +430,9 @@ func (s *Server) working(addr string) {
 			}
 		}
 	}()
-	mux := http.NewServeMux()
-	if s.Config.Profiler {
-		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
-		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	mux := http.DefaultServeMux
+	if !s.Config.Profiler {
+		mux = http.NewServeMux()
 	}
 	mux.Handle("/", s)
 	srv := &http.Server{
@@ -514,14 +509,9 @@ func (s *Server) workingTls(addr string, config *tls.Config) {
 			}
 		}
 	}()
-	mux := http.NewServeMux()
-	if s.Config.Profiler {
-		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-		mux.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
-		mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
-		//		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
-		mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
-		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	mux := http.DefaultServeMux
+	if !s.Config.Profiler {
+		mux = http.NewServeMux()
 	}
 	mux.Handle("/", s)
 
