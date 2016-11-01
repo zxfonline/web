@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
 	"path"
 	"reflect"
 	"regexp"
@@ -15,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	_ "golang.org/x/net/trace"
+	"golang.org/x/net/trace"
 
 	"github.com/zxfonline/chanutil"
 	"github.com/zxfonline/fileutil"
@@ -23,6 +22,7 @@ import (
 	"github.com/zxfonline/golog"
 	"github.com/zxfonline/json"
 	//	"golang.org/x/net/websocket"
+	. "github.com/zxfonline/trace"
 )
 
 var (
@@ -38,7 +38,6 @@ type ServerConfig struct {
 	StaticDir      string
 	CookieSecret   string
 	RecoverPanic   bool
-	Profiler       bool
 	KeepAlive      bool
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
@@ -103,18 +102,13 @@ func SetRecoverPanic(RecoverPanic bool) func(*ServerConfig) {
 		cfg.RecoverPanic = RecoverPanic
 	}
 }
-func SetProfiler(Profiler bool) func(*ServerConfig) {
-	return func(cfg *ServerConfig) {
-		cfg.Profiler = Profiler
-	}
-}
+
 func NewServerConfig(options ...func(*ServerConfig)) *ServerConfig {
 	cfg := &ServerConfig{
 		MaxHeaderBytes: 1 << 20, //1M
 		WriteTimeout:   15 * time.Second,
 		ReadTimeout:    15 * time.Second,
 		RecoverPanic:   true,
-		Profiler:       true,
 		KeepAlive:      false,
 		MaxMemory:      1 << 26, //64M
 	}
@@ -323,9 +317,6 @@ func (s *Server) Run(addr string) {
 	s.initServer()
 
 	mux := http.DefaultServeMux
-	if !s.Config.Profiler {
-		mux = http.NewServeMux()
-	}
 	mux.Handle("/", s)
 
 	s.Logger.Printf(golog.LEVEL_INFO, "http serving %s", addr)
@@ -376,9 +367,6 @@ func (s *Server) RunScgi(addr string) {
 func (s *Server) RunTLS(addr string, config *tls.Config) {
 	s.initServer()
 	mux := http.DefaultServeMux
-	if !s.Config.Profiler {
-		mux = http.NewServeMux()
-	}
 	mux.Handle("/", s)
 	l, err := tls.Listen("tcp", addr, config)
 	if err != nil {
@@ -431,9 +419,6 @@ func (s *Server) working(addr string) {
 		}
 	}()
 	mux := http.DefaultServeMux
-	if !s.Config.Profiler {
-		mux = http.NewServeMux()
-	}
 	mux.Handle("/", s)
 	srv := &http.Server{
 		Handler:        mux,
@@ -510,9 +495,6 @@ func (s *Server) workingTls(addr string, config *tls.Config) {
 		}
 	}()
 	mux := http.DefaultServeMux
-	if !s.Config.Profiler {
-		mux = http.NewServeMux()
-	}
 	mux.Handle("/", s)
 
 	srv := &http.Server{
@@ -721,8 +703,10 @@ func (s *Server) logRequest(ctx Context, sTime time.Time) {
 
 	if len(ctx.Params) > 0 {
 		ctx.Server.Logger.Println(golog.LEVEL_DEBUG, fmt.Sprintf("%s %s %s - %v -Params: %+v", client, req.Method, requestPath, duration, ctx.Params))
+		ctx.TracePrintf("%s %s %s - %v -Params: %+v", client, req.Method, requestPath, duration, ctx.Params)
 	} else {
 		ctx.Server.Logger.Println(golog.LEVEL_DEBUG, fmt.Sprintf("%s %s %s - %v", client, req.Method, requestPath, duration))
+		ctx.TracePrintf("%s %s %s - %v", client, req.Method, requestPath, duration)
 	}
 
 }
@@ -735,7 +719,8 @@ func (s *Server) logRequest(ctx Context, sTime time.Time) {
 // with the returned route.
 func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused *route) {
 	requestPath := req.URL.Path
-	ctx := Context{req, []byte{}, map[string]string{}, s, w}
+	ctx := Context{req, []byte{}, map[string]string{}, s, w, nil}
+	defer ctx.TraceFinish()
 	//set some default headers
 
 	if RunMode == "dev" {
@@ -796,6 +781,19 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			// We can not handle custom http handlers here, give back to the caller.
 			return
 		}
+		if EnableTracing {
+			ctx.tr = trace.New("httpservice", route.r)
+			var client string
+			// We suppose RemoteAddr is of the form Ip:Port as specified in the Request
+			// documentation at http://golang.org/pkg/net/http/#Request
+			pos := strings.LastIndex(req.RemoteAddr, ":")
+			if pos > 0 {
+				client = req.RemoteAddr[0:pos]
+			} else {
+				client = req.RemoteAddr
+			}
+			ctx.TracePrintf("%s %s %s", client, req.Method, requestPath)
+		}
 		var ret []reflect.Value
 		var err interface{}
 		if route.contextHandler != nil {
@@ -829,7 +827,7 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			}
 			bb, err1 := json.Marshal(err)
 			if err1 == nil {
-				ctx.SetHeader("Content-Type", "application/json; charset=utf-8", true)
+				ctx.SetHeader("Content-Type", "text/plain; charset=utf-8", true)
 				ctx.SetHeader("Content-Length", strconv.Itoa(len(bb)), true)
 				ctx.AbortBytes(stt, bb)
 			} else {
@@ -861,7 +859,7 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			}
 			bb, err1 := json.Marshal(v)
 			if err1 == nil {
-				ctx.SetHeader("Content-Type", "application/json; charset=utf-8", true)
+				ctx.SetHeader("Content-Type", "text/plain; charset=utf-8", true)
 				content = bb
 			} else {
 				ctx.Abort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))

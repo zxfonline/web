@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zxfonline/golog"
+	"golang.org/x/net/trace"
 )
 
 // A Context object is created for every incoming HTTP request, and is
@@ -30,11 +31,12 @@ import (
 // and acts as a Writer for the response.
 
 type Context struct {
-	Request *http.Request
+	Request     *http.Request
 	RequestBody []byte
-	Params  map[string]string
-	Server  *Server
+	Params      map[string]string
+	Server      *Server
 	http.ResponseWriter
+	tr trace.Trace
 }
 
 var (
@@ -42,6 +44,25 @@ var (
 	acceptsXmlRegex  = regexp.MustCompile(`(application/xml|text/xml)(?:,|$)`)
 	acceptsJsonRegex = regexp.MustCompile(`(application/json)(?:,|$)`)
 )
+
+func (ctx *Context) TraceFinish() {
+	if ctx.tr != nil {
+		ctx.tr.Finish()
+		ctx.tr = nil
+	}
+}
+func (ctx *Context) TracePrintf(format string, a ...interface{}) {
+	if ctx.tr != nil {
+		ctx.tr.LazyPrintf(format, a...)
+	}
+}
+
+func (ctx *Context) TraceErrorf(format string, a ...interface{}) {
+	if ctx.tr != nil {
+		ctx.tr.LazyPrintf(format, a...)
+		ctx.tr.SetError()
+	}
+}
 
 // Protocol returns request protocol name, such as HTTP/1.1 .
 func (ctx *Context) Protocol() string {

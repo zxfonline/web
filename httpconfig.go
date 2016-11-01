@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/knadh/jsonconfig"
+	"github.com/zxfonline/fileutil"
 	"github.com/zxfonline/golog"
 	"github.com/zxfonline/iptable"
 )
@@ -23,6 +24,7 @@ func LoadHttpServiceConfig() *HttpServiceConfig {
 	if configurl == "" {
 		panic(errors.New(`没找到系统变量:"httpCfg"`))
 	}
+	configurl = fileutil.TransPath(configurl)
 	httpconfig := new(HttpServiceConfig)
 	if err := jsonconfig.Load(configurl, httpconfig); err != nil {
 		panic(fmt.Errorf("加载HTTP SERVICE 过滤文件[%s]错误,error=%v", configurl, err))
