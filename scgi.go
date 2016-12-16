@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zxfonline/buffpool"
 	"github.com/zxfonline/golog"
 )
 
@@ -105,7 +106,8 @@ func (s *Server) readScgiRequest(fd io.ReadWriteCloser) (*http.Request, error) {
 	if length > 16384 {
 		s.Logger.Println(golog.LEVEL_WARN, "Error: max header size is 16k")
 	}
-	headerData := make([]byte, length)
+	headerData := buffpool.BufGet(length)
+	defer buffpool.BufPut(headerData)
 	_, err = reader.Read(headerData)
 	if err != nil {
 		return nil, err
