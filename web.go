@@ -1,5 +1,6 @@
 // Package web is a lightweight web framework for Go. It's ideal for
 // writing simple, performant backend web services.
+
 package web
 
 import (

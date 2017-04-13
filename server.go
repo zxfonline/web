@@ -29,6 +29,7 @@ var (
 	RunMode         string // run mode, "dev" or "prod"
 	CopyRequestBody bool
 	HTTP_HEAD       = "zxfonline@sina.com web server"
+	IndentJson      bool = true
 )
 
 const MAXN_RETRY_TIMES = 60
@@ -728,6 +729,8 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 	}
 	tm := time.Now()
 	ctx.SetHeader("Date", webTime(tm), true)
+	ctx.SetHeader("Access-Control-Allow-Origin", "*", true)             //允许访问所有域
+	ctx.SetHeader("Access-Control-Allow-Headers", "Content-Type", true) //header的类型
 	//	ctx.SetCacheControl(0)
 	//	ctx.SetLastModified(tm)
 
@@ -825,7 +828,13 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			default:
 				err = gerror.NewError(gerror.SERVER_CMSG_ERROR, fmt.Sprintf("%v", err))
 			}
-			bb, err1 := json.Marshal(err)
+			var bb []byte
+			var err1 error
+			if !IndentJson {
+				bb, err1 = json.Marshal(err)
+			} else {
+				bb, err1 = json.MarshalIndent(err, "", " ")
+			}
 			if err1 == nil {
 				ctx.SetHeader("Content-Type", "text/plain; charset=utf-8", true)
 				ctx.SetHeader("Content-Length", strconv.Itoa(len(bb)), true)
@@ -857,7 +866,13 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 				v = gerror.New(gerror.CUSTOM_ERROR, v.(error))
 			default:
 			}
-			bb, err1 := json.Marshal(v)
+			var bb []byte
+			var err1 error
+			if !IndentJson {
+				bb, err1 = json.Marshal(v)
+			} else {
+				bb, err1 = json.MarshalIndent(v, "", " ")
+			}
 			if err1 == nil {
 				ctx.SetHeader("Content-Type", "text/plain; charset=utf-8", true)
 				content = bb
