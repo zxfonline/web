@@ -64,7 +64,7 @@ func CheckServiceEnable(ctx *Context) bool {
 	if r, ok := ServiceConfig.Routers[url]; ok { //没配置则默认通过
 		if !r.Enable { //禁用
 			// 过滤ip权限
-			if !iptable.IsTrustedIP(ipStr) {
+			if !iptable.IsTrustedIP(ipStr, true) {
 				return false
 			}
 		}
