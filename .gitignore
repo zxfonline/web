@@ -1,14 +1,12 @@
-*.6
-*.8
-*.o
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
 *.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-*.go~
-*.cgo?.*
-_cgo_*
-_obj
-_test
-_testmain.go
-*.swp
-_site
-.DS_Store
