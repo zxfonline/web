@@ -8,8 +8,8 @@ import (
 
 	"errors"
 
+	trace "github.com/zxfonline/golangtrace"
 	"github.com/zxfonline/web"
-	"golang.org/x/net/trace"
 )
 
 func main() {

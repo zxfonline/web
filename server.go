@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/trace"
+	trace "github.com/zxfonline/golangtrace"
 
 	"github.com/zxfonline/chanutil"
 	"github.com/zxfonline/fileutil"
@@ -28,7 +28,7 @@ import (
 var (
 	RunMode         string // run mode, "dev" or "prod"
 	CopyRequestBody bool
-	HTTP_HEAD       = "zxfonline@sina.com web server"
+	HTTP_HEAD            = "web server"
 	IndentJson      bool = true
 )
 

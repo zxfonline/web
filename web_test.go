@@ -21,7 +21,8 @@ import (
 )
 
 func init() {
-	runtime.GOMAXPROCS(4)
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	IndentJson = false
 }
 
 // ioBuffer is a helper that implements io.ReadWriteCloser,
@@ -64,7 +65,6 @@ func buildTestResponse(buf *bytes.Buffer) *testResponse {
 
 	response := testResponse{headers: make(map[string][]string), cookies: make(map[string]string)}
 	s := buf.String()
-	//	fmt.Println("s===========\n", s)
 	contents := strings.SplitN(s, "\r\n\r\n", 2)
 
 	header := contents[0]
@@ -347,7 +347,7 @@ func TestHead(t *testing.T) {
 			t.Fatalf("head and get: one has content-length, one doesn't")
 		}
 
-		if hascl1 == true && getcl != headcl {
+		if hascl1 && getcl != headcl {
 			t.Fatalf("head and get content-length differ")
 		}
 	}
@@ -455,7 +455,7 @@ func TestScgiHead(t *testing.T) {
 			t.Fatalf("head and get: one has content-length, one doesn't")
 		}
 
-		if hascl1 == true && getcl != headcl {
+		if hascl1 && getcl != headcl {
 			t.Fatalf("head and get content-length differ")
 		}
 	}

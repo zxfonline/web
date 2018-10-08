@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/zxfonline/golog"
-	"golang.org/x/net/trace"
+	"github.com/zxfonline/iptable"
+
+	trace "github.com/zxfonline/golangtrace"
 )
 
 // A Context object is created for every incoming HTTP request, and is
@@ -551,3 +553,15 @@ func SetLogger(logger *golog.Logger) {
 var Config = NewServerConfig()
 var Logger = golog.New("HttpServer")
 var mainServer = NewServer(SetServerConfig(Config), SetServerLogger(Logger))
+
+//检查指定服务是否可用
+func CheckServiceEnable(ctx *Context) bool {
+	ipStr := iptable.RequestIP(ctx.Request)
+	return !iptable.IsBlackIp(ipStr)
+}
+
+//是否是受信任的地址
+func IsTrustedIP(ctx *Context) bool {
+	ipStr := iptable.RequestIP(ctx.Request)
+	return iptable.IsTrustedIP(ipStr)
+}
