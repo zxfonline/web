@@ -389,7 +389,7 @@ func (s *Server) RunTLS(addr string, config *tls.Config) {
 	}
 }
 
-func (s *Server) RunMux(wg *sync.WaitGroup, addr string) {
+func (s *Server) RunMux(wg *sync.WaitGroup, addr, base_pattern string) {
 	s.initServer()
 	err := s.startListen(1, addr)
 	if err != nil {
@@ -397,10 +397,10 @@ func (s *Server) RunMux(wg *sync.WaitGroup, addr string) {
 	}
 	s.wg = wg
 	wg.Add(1)
-	go s.working(addr)
+	go s.working(base_pattern, addr)
 }
 
-func (s *Server) working(addr string) {
+func (s *Server) working(base_pattern, addr string) {
 	defer func() {
 		if !s.Closed() {
 			if e := recover(); e != nil {
@@ -411,7 +411,7 @@ func (s *Server) working(addr string) {
 			if err != nil { //重连失败
 				s.Close()
 			} else { //重连成功，继续工作
-				go s.working(addr)
+				go s.working(base_pattern, addr)
 			}
 		} else {
 			if e := recover(); e != nil {
@@ -420,7 +420,7 @@ func (s *Server) working(addr string) {
 		}
 	}()
 	mux := http.DefaultServeMux
-	mux.Handle("/", s)
+	mux.Handle(base_pattern, s)
 	srv := &http.Server{
 		Handler:        mux,
 		ReadTimeout:    s.Config.ReadTimeout,
@@ -822,7 +822,9 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			stt := http.StatusInternalServerError
 			switch err.(type) {
 			case *gerror.SysError:
+				//				if err.(*gerror.SysError).Code == gerror.OK {
 				stt = http.StatusOK
+				//				}
 			case error:
 				err = gerror.New(gerror.SERVER_CMSG_ERROR, err.(error))
 			default:
