@@ -389,7 +389,7 @@ func (s *Server) RunTLS(addr string, config *tls.Config) {
 	}
 }
 
-func (s *Server) RunMux(wg *sync.WaitGroup, addr, base_pattern string) {
+func (s *Server) RunMux(wg *sync.WaitGroup, base_pattern, addr string) {
 	s.initServer()
 	err := s.startListen(1, addr)
 	if err != nil {
