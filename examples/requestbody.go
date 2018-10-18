@@ -15,7 +15,7 @@ import (
 func main() {
 	web.CopyRequestBody = true
 	web.Get("/json", func(ctx *web.Context) string {
-		tr := trace.New("mypkg.json", ctx.Request.URL.Path)
+		tr := trace.New("mypkg.json", ctx.Request.URL.Path, false)
 		defer tr.Finish()
 
 		str := string(ctx.RequestBody)
