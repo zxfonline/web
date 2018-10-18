@@ -785,7 +785,7 @@ func (s *Server) routeHandler(req *http.Request, w http.ResponseWriter) (unused 
 			return
 		}
 		if EnableTracing {
-			ctx.tr = trace.New("httpservice", route.r)
+			ctx.tr = trace.New("httpservice", route.r, true)
 			var client string
 			// We suppose RemoteAddr is of the form Ip:Port as specified in the Request
 			// documentation at http://golang.org/pkg/net/http/#Request
