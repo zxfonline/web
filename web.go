@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -476,18 +477,19 @@ func init() {
 	contextType = reflect.TypeOf(Context{})
 	//find the location of the exe file
 	wd, _ := os.Getwd()
-	arg0 := path.Clean(os.Args[0])
-	var exeFile string
-	if strings.HasPrefix(arg0, "/") {
-		exeFile = arg0
-	} else {
-		//TODO for robustness, search each directory in $PATH
-		exeFile = path.Join(wd, arg0)
+	exeFile := path.Clean(os.Args[0])
+	parent, _ := filepath.Split(exeFile)
+	//1：命令执行所在目录
+	wdDir := strings.Replace(filepath.Clean(filepath.Join(wd, "static")), "\\", "/", -1)
+	defaultStaticDirs = append(defaultStaticDirs, wdDir)
+	exeDir := strings.Replace(filepath.Clean(filepath.Join(parent, "static")), "\\", "/", -1)
+	if wdDir != exeDir { //2：可执行文件所在目录
+		defaultStaticDirs = append(defaultStaticDirs, exeDir)
 	}
-	parent, _ := path.Split(exeFile)
-	defaultStaticDirs = append(defaultStaticDirs, path.Join(parent, "static"))
-	defaultStaticDirs = append(defaultStaticDirs, path.Join(wd, "static"))
-	return
+	exeLastDir := strings.Replace(filepath.Clean(filepath.Join(parent, "..", "static")), "\\", "/", -1)
+	if wdDir != exeLastDir { //3：可执行文件上一级目录
+		defaultStaticDirs = append(defaultStaticDirs, exeLastDir)
+	}
 }
 
 // Process invokes the main server's routing system.
