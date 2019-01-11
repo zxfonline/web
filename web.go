@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zxfonline/gerror"
 	"github.com/zxfonline/golog"
 	"github.com/zxfonline/iptable"
 
@@ -498,23 +499,31 @@ func Process(c http.ResponseWriter, req *http.Request) {
 }
 
 // Run starts the web application and serves HTTP requests for the main server.
-func Run(addr string) {
+func Run(addr string) (err error) {
+	defer gerror.PanicToErr(&err)
 	mainServer.Run(addr)
+	return
 }
 
 // RunTLS starts the web application and serves HTTPS requests for the main server.
-func RunTLS(addr string, config *tls.Config) {
+func RunTLS(addr string, config *tls.Config) (err error) {
+	defer gerror.PanicToErr(&err)
 	mainServer.RunTLS(addr, config)
+	return
 }
 
 // RunScgi starts the web application and serves SCGI requests for the main server.
-func RunScgi(addr string) {
+func RunScgi(addr string) (err error) {
+	defer gerror.PanicToErr(&err)
 	mainServer.RunScgi(addr)
+	return
 }
 
 // RunFcgi starts the web application and serves FastCGI requests for the main server.
-func RunFcgi(addr string) {
+func RunFcgi(addr string) (err error) {
+	defer gerror.PanicToErr(&err)
 	mainServer.RunFcgi(addr)
+	return
 }
 
 // Close stops the main server.
